@@ -1,0 +1,658 @@
+library(psych)
+library(dplyr)
+library(party)
+library(ggplot2)
+library(gmodels)
+library(caret)
+library(class)
+library(pROC)
+library(kernlab)
+library(plotROC)
+library(randomForest)
+library(caretEnsemble)
+library(RColorBrewer)
+library(reshape2)
+library(DMwR)
+library(ROSE)
+library(e1071)
+library(gridExtra)
+#read the data:
+mydata <- read.csv('file:///C:/Users/Ariel/Documents/census-us.csv')
+
+#Looking into the data:
+str(mydata)
+ggplot(mydata,aes(x=salary,fill=salary))+geom_bar(aes(stat='identity'))+
+  ggplot2::annotate(geom = 'text',label="24,720\n 75%",x=1,y=20000,color='white',size=12)+
+  ggtitle('Target Attribute Distribution')+
+  ggplot2::annotate(geom = 'text',x=2,y=5000,label='7,841\n 25%',,color='white',size=12)+
+  theme(legend.text = element_text(size = 15),legend.title = element_text(size = 22),plot.title = element_text(size = 28,hjust = 0.5))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))
+
+#Isolating the rows with the value "?" in the occupation variable.
+unknown_occupation <- mydata[mydata$occupation==" ?",]
+mydata_clean <- mydata[mydata$occupation !=" ?",]
+# before splitting the occupation into "blue collar" and "white collar" for fitting the tree, checking the proportion of the salary variable in both cases in order to see where the rows with the "?" value belong.
+CrossTable(mydata_clean$salary,format = 'SPSS')
+CrossTable(unknown_occupation$salary,format = 'SPSS')
+#the proportions of the salary below 50,000 is a lot bigger among the missing values dataset than in the main dataset, therefore I will assume that these cases are "blue collar"
+#adding a new variable, "occupation_group", in which I split the different occupations into the two categories, "white collar", and "blue collar".
+mydata$occupation_group <- as.factor(ifelse(mydata$occupation==" Armed-Forces"|
+                                              mydata$occupation==" Craft-repair"|
+                                              mydata$occupation==" Farming-fishing"|
+                                              mydata$occupation==" Handlers-cleaners"|
+                                              mydata$occupation==" Machine-op-inspct"|
+                                              mydata$occupation== " Other-service"|
+                                              mydata$occupation==" Priv-house-serv"|
+                                              mydata$occupation==" Protective-serv"|
+                                              mydata$occupation == " ?" |
+                                              mydata$occupation==" Transport-moving",
+                                            "Blue Collar","White Collar"))
+
+#Checking the frequency of the two categories, the dataset appears to be well balanced:
+CrossTable(mydata$occupation_group,format = 'SPSS')
+ggplot(mydata,aes(x=occupation_group,fill=occupation_group))+geom_bar(aes(stat='identity'))+
+  ggplot2::annotate(geom = 'text',label="16,007\n 49.1%",x=1,y=16000,color='white',size=16)+
+  ggplot2::annotate(geom = 'text',x=6,y=16000,label='16,554\n 50.9%',,color='white',size=16)+
+  scale_fill_manual(values = c('#6C4144','#C57B57'))+
+  theme(legend.text = element_text(size = 15),legend.title = element_text(size = 18))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))
+
+#Fitting the tree:
+tree_model <- ctree(salary ~ ., data = subset(mydata, select = - c(education,occupation,relationship)),controls = ctree_control(minbucket = 1000,minsplit = 1000))
+plot(tree_model)
+
+# Aggregating marital status into a binary feature, as per the decision tree.
+mydata$marital.binary <- ifelse(mydata$marital.status==" Divorced" | 
+                                  mydata$marital.status==" Married-spouse-absent" |
+                                  mydata$marital.status==" Never-married" |
+                                  mydata$marital.status== " Separated" |
+                                  mydata$marital.status==  " Widowed", 0,1)
+
+# Aggregating occupation_group into a binary feature
+mydata$occupation.binary <- ifelse(mydata$occupation_group=="Blue Collar",0,1)
+#Sex
+mydata$sex.male <- ifelse(mydata$sex==" Male",1,0)
+
+# Splitting the data into 3 parts for train, test ans validation:
+set.seed(46)
+ind <- sample(x=c(1:3),size = nrow(mydata),replace = T,prob = c(0.07,0.63,0.3))
+ValidationSet <- mydata[ind==1,]
+TrainingSet <- mydata[ind==2,]
+TestSet <- mydata[ind==3,]
+TrainingSet$salary.num <- factor(ifelse(TrainingSet$salary==" >50K",'X.1','X.0'))
+TestSet$salary.num <- factor(ifelse(TestSet$salary==" >50K",'X.1','X.0'))
+ValidationSet$salary.num <- factor(ifelse(ValidationSet$salary==" >50K",'X.1','X.0'))
+
+##Checking the target feature distribution in the three datasets, to make sure that it is faithful derivative of the full set:
+TestSet2 <- TestSet %>%
+  select(salary) 
+
+
+TrainingSet2 <- TrainingSet %>%
+  select(salary)
+
+
+ValidationSet2 <- ValidationSet %>%
+  select(salary) 
+
+TestSetPlot <- ggplot(data = TestSet2,aes(x=salary,fill=salary))+
+  geom_bar()+labs(title='Distribution of Target Feature in the Test Set')+
+  theme(plot.title = element_text(hjust = 0.5,size = 20))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))+
+  annotate(geom = 'text',label='75.3%',x=1,y=5000,color='white',size=9)+
+  annotate(geom = 'text',label='24.9%',x=2,y=1000,color='white',size=9)
+TrainingSetPlot <- ggplot(data = TrainingSet2,aes(x=salary,fill=salary))+
+  geom_bar()+labs(title='Distribution of Target Feature in the Training Set')+
+  theme(plot.title = element_text(hjust = 0.5,size = 20))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))+
+  annotate(geom = 'text',label='76.3%',x=1,y=6500,color='white',size=9)+
+  annotate(geom = 'text',label='23.6%',x=2,y=2000,color='white',size=9)
+ValidationSetPlot <- ggplot(data = ValidationSet2,aes(x=salary,fill=salary))+
+  geom_bar()+labs(title='Distribution of Target Feature in the Validation Set')+
+  theme(plot.title = element_text(hjust = 0.5,size = 20))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))+
+  annotate(geom = 'text',label='74.9%',x=1,y=800,color='white',size=9)+
+  annotate(geom = 'text',label='25.1%',x=2,y=200,color='white',size=9)
+gridExtra::grid.arrange(TestSetPlot,TrainingSetPlot,ValidationSetPlot)
+
+# Normalize function
+
+normalize <- function(x){
+  return((x-min(x)) / (max(x)-min(x)))
+}
+
+# Normalized Sets:
+TrainingSet.Norm <- normalize(TrainingSet[,c(1,4,12,16,17,18)])
+TrainingSet.Norm$salary.num <- factor(ifelse(TrainingSet$salary==" >50K",'X.1','X.0'))
+TestSet.Norm <- normalize(TestSet[,c(1,4,12,16,17,18)])
+TestSet.Norm$salary.num <- factor(ifelse(TestSet$salary==" >50K",'X.1','X.0'))
+ValidationSet.Norm <- normalize(ValidationSet[,c(1,4,12,16,17,18)])
+ValidationSet.Norm$salary.num <- factor(ifelse(ValidationSet$salary==" >50K",'X.1','X.0'))
+
+# the formula interface for the machine
+f = as.formula(salary.num ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male)
+
+## SECTION 1, MANUAL CROSS-VALIDATION
+
+###SVM
+
+# control w/o cross-validation:
+
+ctrl2 <- trainControl(method = 'none',classProbs = TRUE,summaryFunction = twoClassSummary,savePredictions = TRUE)
+
+#cost:0.01
+set.seed(2)
+grid001 <- data.frame(.C=0.01,.sigma=0.14)
+tune.svm0.01 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid001)
+pred.svm0.01 <- predict(tune.svm0.01,ValidationSet.Norm,type='prob')
+roc.svm0.01 <- roc(pred.svm0.01$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm0.01$auc
+df.svm0.01 <- data.frame(prob=pred.svm0.01$X.0,COST='0.01 / auc = 0.851',obs=ValidationSet.Norm$salary.num)
+
+#cost:0.1
+set.seed(2)
+grid01 <- data.frame(.C=0.1,.sigma=0.14)
+tune.svm0.1 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid01)
+pred.svm0.1 <- predict(tune.svm0.1,ValidationSet.Norm,type='prob')
+roc.svm0.1 <- roc(pred.svm0.1$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm0.1$auc
+df.svm0.1 <- data.frame(prob=pred.svm0.1$X.0,COST='0.1 / auc = 0.857',obs=ValidationSet.Norm$salary.num)
+
+#cost:1
+set.seed(2)
+grid1 <- data.frame(.C=1,.sigma=0.14)
+tune.svm1 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid1)
+pred.svm1 <- predict(tune.svm1,ValidationSet.Norm,type='prob')
+roc.svm1 <- roc(pred.svm1$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm1$auc
+df.svm1 <- data.frame(prob=pred.svm1$X.0,COST='1 / auc = 0.858',obs=ValidationSet.Norm$salary.num)
+
+#cost:10
+set.seed(2)
+grid10 <- data.frame(.C=10,.sigma=0.14)
+tune.svm10 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid10)
+pred.svm10 <- predict(tune.svm10,ValidationSet.Norm,type='prob')
+roc.svm10 <- roc(pred.svm10$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm10$auc
+df.svm10 <- data.frame(prob=pred.svm10$X.0,COST='10 / auc = 0.864',obs=ValidationSet.Norm$salary.num)
+
+#cost:100
+set.seed(2)
+grid100 <- data.frame(.C=100,.sigma=0.14)
+tune.svm100 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid100)
+pred.svm100 <- predict(tune.svm100,ValidationSet.Norm,type='prob')
+roc.svm100 <- roc(pred.svm100$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm100$auc
+df.svm100 <- data.frame(prob=pred.svm100$X.0,COST='100 / auc = 0.882',obs=ValidationSet.Norm$salary.num)
+
+#cost:1000
+set.seed(2)
+grid1000 <- data.frame(.C=1000,.sigma=0.14)
+tune.svm1000 <- train(f,data = TrainingSet.Norm,method='svmRadial',scaled=FALSE,trControl=ctrl2,tuneGrid=grid1000)
+pred.svm1000 <- predict(tune.svm1000,ValidationSet.Norm,type='prob')
+roc.svm1000 <- roc(pred.svm1000$X.0,response = ValidationSet.Norm$salary.num)
+roc.svm1000$auc
+df.svm1000 <- data.frame(prob=pred.svm1000$X.0,COST='1000 / auc = 0.880',obs=ValidationSet.Norm$salary.num)
+
+# Spot checking the importance of the predictors on in the model, which appears to be identical to the descriptive tree's nodes:
+varImp(tune.svm1000)
+
+svmAll <- rbind(df.svm1000,df.svm100,df.svm10,df.svm1,df.svm0.1,df.svm0.01)
+svmAll <- rbind(df.svm0.01,df.svm0.1,df.svm1,df.svm10,df.svm100,df.svm1000)
+rocplot <- ggplot(data = svmAll,aes(d=obs,m=1-prob,color=COST))
+rocplot+geom_roc()+geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  guides(color=guide_legend(keywidth=0.3,keyheight=0.6, default.unit="inch"))+
+  theme(legend.text = element_text(size = 16),legend.title = element_text(size = 18))
+
+###KNN:
+
+ctrlKnn <- trainControl(method = 'none',classProbs = TRUE,summaryFunction = twoClassSummary,savePredictions = TRUE)
+
+set.seed(2)
+Kgrid3 <- data.frame(.k=3)
+KnnFit3 <- train(f,data = TrainingSet.Norm,method='knn',trControl=ctrlKnn,tuneGrid=Kgrid3)
+KnnPred3 <- predict(KnnFit3,ValidationSet.Norm,type="prob")
+KnnROC3 <- roc(KnnPred3$X.0,response = ValidationSet.Norm$salary.num)
+KnnROC3$auc
+Knn3.df <- data.frame(prob=KnnPred3$X.0,obs=ValidationSet.Norm$salary.num,K= '3 / auc = 0.807')
+
+set.seed(2)
+Kgrid9 <- data.frame(.k=9)
+KnnFit9 <- train(f,data = TrainingSet.Norm,method='knn',trControl=ctrlKnn,tuneGrid=Kgrid9)
+KnnPred9 <- predict(KnnFit9,ValidationSet.Norm,type="prob")
+KnnROC9 <- roc(KnnPred9$X.0,response = ValidationSet.Norm$salary.num)
+KnnROC9$auc
+Knn9.df <- data.frame(prob=KnnPred9$X.0,obs=ValidationSet.Norm$salary.num,K= '9 / auc = 0.849')
+
+set.seed(2)
+Kgrid13 <- data.frame(.k=13)
+KnnFit13 <- train(f,data = TrainingSet.Norm,method='knn',trControl=ctrlKnn,tuneGrid=Kgrid13)
+KnnPred13 <- predict(KnnFit13,ValidationSet.Norm,type="prob")
+KnnROC13 <- roc(KnnPred13$X.0,response = ValidationSet.Norm$salary.num)
+KnnROC13$auc
+Knn13.df <- data.frame(prob=KnnPred13$X.0,obs=ValidationSet.Norm$salary.num,K= '13 / auc = 0.850')
+
+set.seed(2)
+Kgrid17 <- data.frame(.k=17)
+KnnFit17 <- train(f,data = TrainingSet.Norm,method='knn',trControl=ctrlKnn,tuneGrid=Kgrid17)
+KnnPred17 <- predict(KnnFit17,ValidationSet.Norm,type="prob")
+KnnROC17 <- roc(KnnPred17$X.0,response = ValidationSet.Norm$salary.num)
+KnnROC17$auc
+Knn17.df <- data.frame(prob=KnnPred17$X.0,obs=ValidationSet.Norm$salary.num,K= '17 / auc = 0.851')
+
+set.seed(2)
+Kgrid21 <- data.frame(.k=21)
+KnnFit21 <- train(f,data = TrainingSet.Norm,method='knn',trControl=ctrlKnn,tuneGrid=Kgrid21)
+KnnPred21 <- predict(KnnFit21,ValidationSet.Norm,type="prob")
+KnnROC21 <- roc(KnnPred21$X.0,response = ValidationSet.Norm$salary.num)
+KnnROC21$auc
+Knn21.df <- data.frame(prob=KnnPred21$X.0,obs=ValidationSet.Norm$salary.num,K= '21 / auc = 0.856')
+
+Knn.All <- rbind(Knn3.df,Knn9.df,Knn13.df,Knn17.df,Knn21.df)
+knnplot <- ggplot(data = Knn.All, aes(d=obs,m=1-prob,color=K))
+knnplot+geom_roc()+geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  guides(color=guide_legend(keywidth=0.3,keyheight=0.6, default.unit="inch"))+
+  theme(legend.text = element_text(size = 16),legend.title = element_text(size = 18))
+
+##GLM - No parameter to tune!!
+set.seed(2)
+ctrlglm <- trainControl(method = 'none',classProbs = TRUE,summaryFunction = twoClassSummary,savePredictions = TRUE)
+glmFit <- train(f,TrainingSet,method='glm',trControl = ctrlglm)
+glmPred <- predict(glmFit,newdata=ValidationSet,type='prob')
+glmROC <- roc(glmPred$X.0,response = ValidationSet$salary.num)
+glmROC$auc
+glm.df <- data.frame(prob=glmPred$X.0,obs=ValidationSet$salary.num)
+glmPlot <- ggplot(data =glm.df,aes(d=obs,m=1-prob))
+glmPlot+geom_roc(color='blue',show.legend=T)+
+  geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  ggplot2::annotate(geom = 'text',label='auc = 0.874',x=0.75,y=0.30,size=9)+
+  ggplot2::annotate('rect',x=0.75,y=0.30,xmin = 0.6,xmax = 0.9,ymin = 0.2,ymax = 0.4,alpha=0.2,color='blue')
+
+
+##CART
+
+CARTctrl <- trainControl(method = 'none',summaryFunction = twoClassSummary,savePredictions = TRUE,classProbs = TRUE)
+
+set.seed(2)
+CARTgrid1 <- data.frame(.mincriterion =0.01)
+CARTFit1 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid1)
+CARTPredict1 <- predict(CARTFit1,newdata=ValidationSet,type="prob")
+CARTROC1 <- roc(CARTPredict1$X.0,response = ValidationSet$salary.num)
+CARTROC1$auc
+CART.df1 <- data.frame(prob=CARTPredict1$X.0,obs=ValidationSet$salary.num,mincriterion='0.01 / auc = 0.863')
+
+set.seed(2)
+CARTgrid2 <- data.frame(.mincriterion =0.17)
+CARTFit2 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid2)
+CARTPredict2 <- predict(CARTFit2,newdata=ValidationSet,type="prob")
+CARTROC2 <- roc(CARTPredict2$X.0,response = ValidationSet$salary.num)
+CARTROC2$auc
+CART.df2 <- data.frame(prob=CARTPredict2$X.0,obs=ValidationSet$salary.num,mincriterion='0.17 / auc = 0.870')
+
+set.seed(2)
+CARTgrid3 <- data.frame(.mincriterion =0.33)
+CARTFit3 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid3)
+CARTPredict3 <- predict(CARTFit3,newdata=ValidationSet,type="prob")
+CARTROC3 <- roc(CARTPredict3$X.0,response = ValidationSet$salary.num)
+CARTROC3$auc
+CART.df3 <- data.frame(prob=CARTPredict3$X.0,obs=ValidationSet$salary.num,mincriterion='0.33 / auc = 0.874')
+
+set.seed(2)
+CARTgrid4 <- data.frame(.mincriterion =0.50)
+CARTFit4 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid4)
+CARTPredict4 <- predict(CARTFit4,newdata=ValidationSet,type="prob")
+CARTROC4 <- roc(CARTPredict4$X.0,response = ValidationSet$salary.num)
+CARTROC4$auc
+CART.df4 <- data.frame(prob=CARTPredict4$X.0,obs=ValidationSet$salary.num,mincriterion='0.50 / auc = 0.876')
+
+set.seed(2)
+CARTgrid5 <- data.frame(.mincriterion =0.66)
+CARTFit5 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid5)
+CARTPredict5 <- predict(CARTFit5,newdata=ValidationSet,type="prob")
+CARTROC5 <- roc(CARTPredict5$X.0,response = ValidationSet$salary.num)
+CARTROC5$auc
+CART.df5 <- data.frame(prob=CARTPredict5$X.0,obs=ValidationSet$salary.num,mincriterion='0.66 / auc = 0.876')
+
+set.seed(2)
+CARTgrid6 <- data.frame(.mincriterion =0.82)
+CARTFit6 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid6)
+CARTPredict6 <- predict(CARTFit6,newdata=ValidationSet,type="prob")
+CARTROC6 <- roc(CARTPredict6$X.0,response = ValidationSet$salary.num)
+CARTROC6$auc
+CART.df6 <- data.frame(prob=CARTPredict6$X.0,obs=ValidationSet$salary.num,mincriterion='0.82 / auc = 0.877')
+
+set.seed(2)
+CARTgrid7 <- data.frame(.mincriterion =0.99)
+CARTFit7 <- train(f,data = TrainingSet,method='ctree',trControl=CARTctrl,tuneGrid=CARTgrid7)
+CARTPredict7 <- predict(CARTFit7,newdata=ValidationSet,type="prob")
+CARTROC7 <- roc(CARTPredict7$X.0,response = ValidationSet$salary.num)
+CARTROC7$auc
+CART.df7 <- data.frame(prob=CARTPredict7$X.0,obs=ValidationSet$salary.num,mincriterion='0.99 / auc = 0.874')
+
+CARTAll <- rbind(CART.df1,CART.df2,CART.df3,CART.df4,CART.df5,CART.df6,CART.df7)
+CARTPlot <- ggplot(data = CARTAll,aes(d=obs,m=1-prob,color=mincriterion))
+CARTPlot+geom_roc()+geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  guides(color=guide_legend(keywidth=0.3,keyheight=0.6, default.unit="inch"))+
+  theme(legend.text = element_text(size = 16),legend.title = element_text(size = 18))
+
+
+###Random Forest:
+
+RFctrl <- trainControl(method = 'none',classProbs = TRUE,savePredictions = TRUE,summaryFunction = twoClassSummary)
+
+# mtry = 2
+set.seed(2)
+rfGrid2 <- data.frame(.mtry=2)
+rfFit.2 <- train(f,data = TrainingSet,method='rf',trControl=RFctrl,tuneGrid=rfGrid2)
+rfPredict.2 <- predict(rfFit.2,newdata=ValidationSet,type='prob')
+rfROC2 <- roc(rfPredict.2$X.0,response = ValidationSet$salary.num)
+rfROC2$auc
+rfROC2.df <- data.frame(prob=rfPredict.2$X.0,obs=ValidationSet$salary.num,m='2 / auc = 0.862')
+
+# mtry = 3
+set.seed(2)
+rfGrid3 <- data.frame(.mtry=3)
+rfFit.3 <- train(f,data = TrainingSet,method='rf',trControl=RFctrl,tuneGrid=rfGrid3)
+rfPredict.3 <- predict(rfFit.3,newdata=ValidationSet,type='prob')
+rfROC3 <- roc(rfPredict.3$X.0,response = ValidationSet$salary.num)
+rfROC3$auc
+rfROC3.df <- data.frame(prob=rfPredict.3$X.0,obs=ValidationSet$salary.num,m='3 / auc = 0.853')
+
+
+
+# mtry = 4
+set.seed(2)
+rfGrid4 <- data.frame(.mtry=4)
+rfFit.4 <- train(f,data = TrainingSet,method='rf',trControl=RFctrl,tuneGrid=rfGrid4)
+rfPredict.4 <- predict(rfFit.4,newdata=ValidationSet,type='prob')
+rfROC4 <- roc(rfPredict.4$X.0,response = ValidationSet$salary.num)
+rfROC4$auc
+rfROC4.df <- data.frame(prob=rfPredict.4$X.0,obs=ValidationSet$salary.num,m='4 / auc = 0.846')
+
+
+# mtry = 5
+set.seed(2)
+rfGrid5 <- data.frame(.mtry=5)
+rfFit.5 <- train(f,data = TrainingSet,method='rf',trControl=RFctrl,tuneGrid=rfGrid5)
+rfPredict.5 <- predict(rfFit.5,newdata=ValidationSet,type='prob')
+rfROC5 <- roc(rfPredict.5$X.0,response = ValidationSet$salary.num)
+rfROC5$auc
+rfROC5.df <- data.frame(prob=rfPredict.5$X.0,obs=ValidationSet$salary.num,m='5 / auc = 0.834')
+
+
+# mtry = 6
+set.seed(2)
+rfGrid6 <- data.frame(.mtry=6)
+rfFit.6 <- train(f,data = TrainingSet,method='rf',trControl=RFctrl,tuneGrid=rfGrid6)
+rfPredict.6 <- predict(rfFit.6,newdata=ValidationSet,type='prob')
+rfROC6 <- roc(rfPredict.6$X.0,response = ValidationSet$salary.num)
+rfROC6$auc
+rfROC6.df <- data.frame(prob=rfPredict.6$X.0,obs=ValidationSet$salary.num,m='6 / auc = 0.833')
+
+rfAll <- rbind(rfROC2.df,rfROC3.df,rfROC4.df,rfROC5.df,rfROC6.df)
+
+rfPlot <- ggplot(data = rfAll, aes(d=obs, m=1-prob, color=m))
+rfPlot+geom_roc()+
+  geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  guides(color=guide_legend(keywidth=0.3,keyheight=0.6, default.unit="inch"))+
+  theme(legend.text = element_text(size = 16),legend.title = element_text(size = 18))
+
+
+## predicting the best model in each method on the unseen test set
+# SVM
+set.seed(2)
+svmBest <- predict(tune.svm100,TestSet.Norm,type='prob')
+svmBest.ROC <- roc(svmBest$X.0,response = TestSet.Norm$salary.num)
+svmBest.ROC$auc
+svmBest.df <- data.frame(prob=svmBest$X.0,obs=TestSet.Norm$salary.num,Method= 'SVM / auc = 0.876')
+
+# KNN
+set.seed(2)
+KnnBest <- predict(KnnFit21,TestSet.Norm,type="prob")
+KnnBest.ROC <- roc(KnnBest$X.0,response = TestSet.Norm$salary.num)
+KnnBest.ROC$auc
+KnnBest.df <- data.frame(prob=KnnBest$X.0,obs=TestSet.Norm$salary.num,Method= 'KNN / auc = 0.853')
+
+#CART
+set.seed(2)
+CARTBest <- predict(CARTFit6,newdata=TestSet,type="prob")
+CARTBest.ROC <- roc(CARTBest$X.0,response = TestSet$salary.num)
+CARTBest.ROC$auc
+CARTBest.df <- data.frame(prob=CARTBest$X.0,obs=TestSet$salary.num,Method= 'CART / auc = 0.878')
+
+#GLM
+set.seed(2)
+GLMBest <- predict(glmFit,newdata=TestSet,type='prob')
+GLMBest.ROC <- roc(GLMBest$X.0,response = TestSet$salary.num)
+GLMBest.ROC$auc
+GLMBest.df <- data.frame(prob=GLMBest$X.0,obs=TestSet$salary.num,Method= 'GLM / auc = 0.873')
+
+rfBest <- predict(rfFit.2,newdata=TestSet,type='prob')
+rfBest.ROC <- roc(rfBest$X.0,response = TestSet$salary.num)
+rfBest.ROC$auc
+rfBest.df <- data.frame(prob=rfBest$X.0,obs=TestSet$salary.num,Method= 'RF / auc = 0.862')
+
+bestAll <- rbind(CARTBest.df, svmBest.df, GLMBest.df, rfBest.df, KnnBest.df)
+bestPlot <- ggplot(data = bestAll, aes(d=obs, m= 1-prob, color=Method))
+bestPlot + geom_roc()+
+  geom_abline(aes(intercept=0,slope=1),linetype='dashed')+
+  theme_minimal()+
+  guides(color=guide_legend(keywidth=0.3,keyheight=0.6, default.unit="inch"))+
+  theme(legend.text = element_text(size = 16),legend.title = element_text(size = 18))
+
+## SECTION 2 10-FOLD CROSS VALIDATION ACCURACY & KAPPA METRICS
+
+# setting up a grid with all possible K's from 1 to 20 for Knn algorithm to iterate and find the best tune.
+tunegrid <- expand.grid(.k=1:20)
+
+set.seed(7)
+mod.knn <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="knn",tuneGrid=tunegrid,preProcess=c("center","scale"),trControl=control,metric="Accuracy")
+set.seed
+mod.glm <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="glm",trControl=control,metric="Accuracy")
+set.seed(7)
+mod.cart <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="ctree",trControl=control,metric="Accuracy")
+set.seed(7)
+mod.svm <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="svmRadial",trControl=control,metric="Accuracy")
+set.seed(7)
+mod.rf <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="rf",trControl=control,metric="Accuracy")
+
+# Summary of the models:
+getTrainPerf(mod.knn)
+getTrainPerf(mod.glm)
+getTrainPerf(mod.cart)
+getTrainPerf(mod.svm)
+getTrainPerf(mod.rf)
+
+#plot and choose number of K Neighbours:
+set.seed(7)
+plot(mod.knn)
+mod.knn$bestTune #best K value is 19
+
+set.seed(7)
+KNN_Predict <- predict(mod.knn, testing[-14])
+CrossTable(KNN_Predict,testing$salary,prop.chisq = F,format = 'SPSS')
+
+set.seed(7)
+GLM_Predict <- predict(mod.glm, testing[-14])
+CrossTable(GLM_Predict,testing$salary,prop.chisq = F,format = 'SPSS')
+
+set.seed(7)
+CART_Predict <- predict(mod.cart, testing[-14])
+CrossTable(CART_Predict,testing$salary,prop.chisq = F,format = 'SPSS')
+testing$Cart <-  as.numeric(predict(mod.cart, testing))        
+
+set.seed(7)
+results <- resamples(list(KNN=mod.knn,LOGIT=mod.glm,CART=mod.cart,SVM=mod.svm,RF=mod.rf))
+summary()
+bwplot(results)
+densityplot(results)
+dotplot(results)
+
+#Checking the importance of features on the overall accuracy of the models:
+varImp(mod.knn)
+varImp(mod.glm)
+varImp(mod.svm)
+varImp(mod.rf)
+varImp(mod.cart)
+
+resultsData <- data.frame(KNN=results$values[,2],LOGIT=results$values[,4],CART = results$values[,6],SVM=results$values[,8],RF=results$values[,10])
+resultsDataStacked <- stack(resultsData)
+colnames(resultsDataStacked) <- c("Values","Method")
+p <- ggplot(aes(Values),data = resultsDataStacked)
+p+geom_density(aes(fill=Method),alpha=0.9)+xlab("Accuracy")+ylab("Density")
+qplot(x='',y=Values,data = resultsDataStacked,geom = 'boxplot',facets = . ~ Method,fill=Method,xlab = '',ylab = 'Accuracy')+
+  geom_hline(aes(yintercept=mean(Values),color=''),data = resultsDataStacked,linetype='dashed',size=1.6)+
+  scale_color_manual(name='Accuracy\n Mean of All Models',values = 'black')+
+  theme(legend.title = element_text(size = 16))+
+  guides(fill=guide_legend(keywidth = 0.4,keyheight = 0.4,default.unit = 'inch'))+
+  theme(legend.text = element_text(size = 17))+
+  scale_fill_manual(values = c('#886C96','#4F5668','#89023E','#EA638C','#FFD9DA'))+theme_light()
+write.csv(resultsData,file = 'Accuracy_NoNorm.csv')
+
+##Kappa:
+resultsKappa <- data.frame(KNN=results$values[,3],LOGIT=results$values[,5],CART=results$values[,7],SVM=results$values[,9],RF=results$values[,11])
+resultsKappaStacked <- stack(resultsKappa)
+colnames(resultsKappaStacked) <- c('Value','Method')
+qplot(x='',y=Value,geom = 'boxplot',data = resultsKappaStacked,facets = .~ Method,fill=Method,ylab = 'Kappa',xlab = '')+
+  geom_hline(aes(yintercept=mean(Value),color=''),data = resultsKappaStacked,linetype='dashed',size=1.6)+
+  scale_color_manual(name='Kappa\n Mean of All Models. ',values = 'black')+
+  theme(legend.title = element_text(size = 16))+
+  guides(fill=guide_legend(keywidth = 0.4,keyheight = 0.4,default.unit = 'inch'))+
+  theme(legend.text = element_text(size = 17))+
+  scale_fill_manual(values = c('#886C96','#4F5668','#89023E','#EA638C','#FFD9DA'))+
+  theme_light()
+write.csv(results$values,file = 'Accuracy_Kappa_NoNorm.csv')
+
+## SECTION 3 10 FOLDS CROSS-VALIDATION AUC METRIC
+
+control <- trainControl(method = "cv",repeats = 10,classProbs = T, summaryFunction = twoClassSummary,savePredictions = T)
+metric <- "ROC"
+
+
+set.seed(7)
+modROC.knn <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="knn",preProcess=c("center","scale"),trControl=control,metric=metric)
+set.seed(7)
+modROC.glm <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="glm",trControl=control,metric=metric)
+set.seed(7)
+modROC.cart <- train(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,method="ctree",trControl=control,metric=metric)
+
+
+##plot.roc
+par(mfrow=c(1,3))
+plot.roc(roc(predictor=modROC.cart$pred$X...50K,response = modROC.cart$pred$obs),col='red',main="CART",ylim = c(0,1))
+plot.roc(roc(predictor=modROC.knn$pred$X...50K,response = modROC.knn$pred$obs),col='blue',main="Knn",ylim = c(0,1))
+plot.roc(roc(predictor=modROC.glm$pred$X...50K,response = modROC.glm$pred$obs),col='green',main="GLM",ylim = c(0,1))
+
+#same plot with ggplot:
+glm <- data.frame(D=modROC.glm$pred$obs, M = 1-(modROC.glm$pred$X...50K),METHOD='GLM')
+knn <- data.frame(D=modROC.knn$pred$obs, M = 1-(modROC.knn$pred$X...50K),METHOD='KNN')
+cart <- data.frame(D=modROC.cart$pred$obs, M = 1-(modROC.cart$pred$X...50K),METHOD='CART')
+AllThree <- rbind(cart,knn,glm)
+AllThreeCurves <- ggplot(data = AllThree,aes(m=M,d=D))
+AllThreeCurves+geom_roc(aes(color=METHOD)) + geom_abline(intercept = 0, slope = 1,linetype="dashed")
+resultsROC <- resamples(list(KNN=modROC.knn,LOGIT=modROC.glm,CART=modROC.cart))
+summary(resultsROC)
+resultsROC$values
+resultsROCData <- data.frame(KNN = resultsROC$values[,2], LOGIT = resultsROC$values[,5], CART = resultsROC$values[,8])
+resultsROCStacked <- stack(resultsROCData)
+colnames(resultsROCStacked) <- c('Values','Method')
+pp <- ggplot(aes(x=Values),data = resultsROCStacked)
+pp+geom_density(aes(fill=Method),alpha=0.9)+xlab("AUROC Accuracy")+ylab('Density')
+qplot(x='',y=Values,data = resultsROCStacked,geom = 'boxplot',facets = . ~ Method,fill=Method,xlab = '',ylab = 'AUROC Accuracy')
+
+## SECTION 4 ENSEMBLES METHODS AND FINAL RESULTS
+
+set.seed(7)
+algorithmList <- c('knn','ctree','glm','svmRadial','rf')
+models <- caretList(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,methodList = algorithmList,trControl=control,metric="Accuracy")
+resultsList <- resamples(models)
+modelCor(resultsList) #Checking correlation between the models.
+algorithmList.2 <- c('knn','ctree','glm','svmRadial') #since Random Forest was highly correlated with other two models, it was removed from the stacked model
+stackControl <- trainControl(method = "repeatedcv", number = 10, repeats = 3, savePredictions = TRUE, classProbs = TRUE)
+models.2 <- caretList(salary ~ Age+education.num+hours.per.week+marital.binary+occupation.binary+sex.male,data = training,methodList = algorithmList.2,trControl=stackControl,metric="Accuracy")
+resultsList.2 <- resamples(models.2)
+
+#ploting correlation matrix of the model list:
+x <- round(cor(modelCor(resultsList)),digits = 2)
+x <- melt(x)
+c1 <- ggplot(data = x,aes(x=Var1,y=Var2,fill=value))+
+  geom_tile()+
+  theme_bw()+
+  geom_text(aes(label=value),color='black',size=15)+
+  labs(title='Model List Correlation Mtrix',x='',y='')+
+  theme(text = element_text(size = 30),legend.position = 'none')+
+  theme(plot.title = element_text(hjust = 0.5))
+c1+scale_fill_distiller(palette = 'YlOrRd')
+
+# greedy AUC optimization of list 2 (w/o random forest). Big improvment
+set.seed(7)
+greedyControl <- trainControl(number = 2,summaryFunction = twoClassSummary,classProbs = TRUE,savePredictions = TRUE)
+greedy_ensemble <- caretEnsemble(models.2,metric='ROC', trControl=greedyControl) # ??
+summary(greedy_ensemble)
+
+set.seed(7)
+stack.glm_greedy <- caretStack(models.2, method = "glm",metric = 'ROC', trControl = greedyControl)
+
+#greedy with accuracy instead of ROC:
+set.seed(7)
+greedyControl <- trainControl(method = 'cv',repeats = 10,number = 2,savePredictions = TRUE)
+
+set.seed(7)
+stack.glm_greedy2 <- caretStack(models.2, method = "glm",metric = 'Accuracy', trControl = greedyControl)
+# plotting AUC of the ensemble model:
+
+stackEnsemble <- data.frame(D=stack.glm_greedy$ens_model$pred$obs,M=1-(stack.glm_greedy$ens_model$pred$X...50K),METHOD='Ensemble')
+stackKnn <- data.frame(D=stack.glm_greedy$models$knn$pred$obs,M=1-(stack.glm_greedy$models$knn$pred$X...50K),METHOD='KNN')
+stackCaret <- data.frame(D=stack.glm_greedy$models$ctree$pred$obs,M=1-(stack.glm_greedy$models$ctree$pred$X...50K),METHOD='CARET')
+stackLogit <- data.frame(D=stack.glm_greedy$models$glm$pred$obs,M=1-(stack.glm_greedy$models$glm$pred$X...50K),METHOD='LOGIT')
+stackSVM <- data.frame(D=stack.glm_greedy$models$svmRadial$pred$obs,M=1-(stack.glm_greedy$models$svmRadial$pred$X...50K),METHOD='SVM')
+StackAllModels <- rbind(stackEnsemble,stackKnn,stackCaret,stackLogit,stackSVM)
+ggplot(data = StackAllModels, aes(m=M,d=D))+geom_roc(aes(color=METHOD))+geom_abline(intercept = 0,slope = 1,linetype="dashed")+ggtitle("AUC Of Linear Ensemble Model Per Method")
+
+
+set.seed(7)
+stack.glm <- caretStack(models.2, method = "glm",metric = metric, trControl = stackControl)
+stack.rf <- caretStack(models.2, method = "rf",metric = metric, trControl = stackControl)
+##Data Frame with all the results:
+
+AllResults <- data.frame(KNN_Stack_Accuracy = max(resultsList.2$values$`knn~Accuracy`),KNN_Stack_Kappa = max(resultsList.2$values$`knn~Kappa`),
+                         KNN_Accuracy = max(results$values$`KNN~Accuracy`),KNN_Kappa = max(results$values$`KNN~Kappa`),
+                         LOGIT_Stack_Accuracy=max(resultsList.2$values$`glm~Accuracy`),
+                         LOGIT_Stack_Kappa = max(resultsList.2$values$`glm~Kappa`),LOGIT_Accuracy = max(results$values$`LOGIT~Accuracy`),
+                         LOGIT_Kappa = max(results$values$`LOGIT~Kappa`),CART_Stack_Accuracy = max(resultsList.2$values$`ctree~Accuracy`),
+                         CART_Stack_Kappa=max(resultsList.2$values$`ctree~Kappa`),CART_Accuracy = max(results$values$`CART~Accuracy`),
+                         CART_Kappa = max(results$values$`CART~Kappa`),SVM_Stack_Accuracy = max(resultsList.2$values$`svmRadial~Accuracy`),
+                         SVM_Stack_Kappa = max(resultsList.2$values$`svmRadial~Kappa`),SVM_Accuracy = max(results$values$`SVM~Accuracy`),
+                         SVM_Kappa = max(results$values$`SVM~Kappa`),RandomForest_Accuracy = max(results$values$`RF~Accuracy`),
+                         RandomForest_Kappa = max(results$values$`RF~Kappa`),ENSEMBLE_LOGIT_Accuracy = max(stack.glm$ens_model$results$Accuracy),
+                         ENSEMBLE_LOGIT_Kappa = max(stack.glm$ens_model$results$Kappa),ENSEMBLE_RandomForest_Accuracy = max(stack.rf$ens_model$results$Accuracy),
+                         ENSEMBLE_RandomForest_Kappa = max(stack.rf$ens_model$results$Kappa))
+
+STACK_Kappa <- c(KNN_Stack_Kappa = max(resultsList.2$values$`knn~Kappa`),
+                 LOGIT_Stack_Kappa = max(resultsList.2$values$`glm~Kappa`), 
+                 CART_Stack_Kappa=max(resultsList.2$values$`ctree~Kappa`), 
+                 SVM_Stack_Kappa = max(resultsList.2$values$`svmRadial~Kappa`))
+
+Kappa <- c(KNN_Kappa = max(results$values$`KNN~Kappa`),
+           LOGIT_Kappa = max(results$values$`LOGIT~Kappa`),
+           CART_Kappa = max(results$values$`CART~Kappa`), 
+           SVM_Kappa = max(results$values$`SVM~Kappa`))
+KaapaAll <- data.frame(Kappa_Stacked = STACK_Kappa,Kappa_Single = Kappa,Method = c('KKN','LOGIT','CART','SVM'))
+KaapaAll.stack <- stack(KaapaAll)
+KaapaAll.stack <- data.frame(KaapaAll.stack,Method = c('KKN','LOGIT','CART','SVM','KKN','LOGIT','CART','SVM'))
+colnames(KaapaAll.stack) <- c('Values','Stacked / Single Model','Method','Method.1')
+
+#Plotting comparison of Kappa results per method, stacked vs unstacked:
+ggplot(KaapaAll.stack,aes(x=Method,y=Values))+geom_bar(aes(fill=`Stacked / Single Model`),stat = "identity", position = position_dodge())+
+  scale_y_continuous(limits = c(0,1))+
+  scale_fill_manual(values = c('#4C5B5C','#FF715B'))+
+  theme(axis.text.x = element_text(size=16))+
+  theme(legend.title = element_text(size=18))+
+  guides(fill=guide_legend(keywidth=0.3,keyheight=0.3, default.unit="inch"))+
+  theme(legend.text = element_text(size = 12))
+
